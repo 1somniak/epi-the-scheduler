@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Direnv & Nix
+.direnv
+result
+result-*
+.envrc
