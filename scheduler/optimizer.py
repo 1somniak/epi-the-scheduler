@@ -41,6 +41,74 @@ class ScheduleOptimizer:
         self.config = config or SchedulerConfig()
         self.verbose = verbose
 
+    def compute_min_maybe_needed(self, candidate_people: list[Person]) -> int:
+        """Determines the minimum number of 'maybe' assignments strictly required
+        to fulfill shift sizing and board presence constraints without introducing
+        avoidable placeholders.
+        """
+        prob_pre = pulp.LpProblem("PreSolveMinMaybe", pulp.LpMinimize)
+        x_pre: dict[tuple[Person, int], pulp.LpVariable] = {}
+        for p in candidate_people:
+            for s in self.shifts:
+                avail = p.availability.get(s.index, Availability.NO)
+                if avail in (Availability.YES, Availability.MAYBE):
+                    x_pre[p, s.index] = pulp.LpVariable(
+                        f"pre_x_{p.canonical_id}_{s.index}", cat="Binary"
+                    )
+
+        total_shifts = len(self.shifts)
+        mm = {
+            s.index: pulp.LpVariable(
+                f"pre_mm_{s.index}",
+                lowBound=0,
+                upBound=self.config.get_shift_size(i, total_shifts),
+                cat="Integer",
+            )
+            for i, s in enumerate(self.shifts)
+        }
+        mb = {
+            s.index: pulp.LpVariable(
+                f"pre_mb_{s.index}",
+                lowBound=0,
+                upBound=self.config.get_shift_size(i, total_shifts),
+                cat="Integer",
+            )
+            for i, s in enumerate(self.shifts)
+        }
+
+        for i, s in enumerate(self.shifts):
+            target_size = self.config.get_shift_size(i, total_shifts)
+            prob_pre += (
+                pulp.lpSum(x_pre.get((p, s.index), 0) for p in candidate_people)
+                + mb[s.index]
+                + mm[s.index]
+                == target_size
+            )
+            prob_pre += (
+                pulp.lpSum(x_pre.get((p, s.index), 0) for p in candidate_people if p.is_board)
+                + mb[s.index]
+                >= 1
+            )
+
+        maybe_vars_pre = [
+            x_pre[p, s.index]
+            for p in candidate_people
+            for s in self.shifts
+            if (p, s.index) in x_pre and p.availability.get(s.index) == Availability.MAYBE
+        ]
+
+        prob_pre += (
+            100_000 * pulp.lpSum(mb.values())
+            + 50_000 * pulp.lpSum(mm.values())
+            + 1 * pulp.lpSum(maybe_vars_pre)
+        )
+
+        prob_pre.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=5))
+        if prob_pre.status == 1:
+            val = sum(pulp.value(v) for v in maybe_vars_pre if pulp.value(v) is not None)
+            return round(val)
+        return 0
+
     def solve(self) -> ScheduleSolution:
         """Constructs the MILP problem, solves it, and returns the solution."""
         cfg = self.config
@@ -54,34 +122,41 @@ class ScheduleOptimizer:
         # If nobody active, we still proceed so placeholders can fill the schedule
         candidate_people = active_people if active_people else self.people
 
+        # Determine if any 'maybe' assignments are strictly necessary due to lack of YES members
+        min_maybe_needed = self.compute_min_maybe_needed(candidate_people)
+
         # 1. Decision variables: x[p, s] in {0, 1}
         # Hard constraint: Never create x[p, s] if availability is 'no'
+        # People with 'maybe' availability only staff in case of necessity (insufficient YES members)
         x: dict[tuple[Person, int], pulp.LpVariable] = {}
         for p in candidate_people:
             for s in self.shifts:
                 avail = p.availability.get(s.index, Availability.NO)
-                if avail != Availability.NO:
+                if avail == Availability.YES or (avail == Availability.MAYBE and min_maybe_needed > 0):
                     var_name = f"x_{p.canonical_id}_{s.index}"
                     x[p, s.index] = pulp.LpVariable(var_name, cat="Binary")
 
         # 2. Placeholders per shift (Missing board member and missing general member)
+        total_shifts = len(self.shifts)
         missing_board: dict[int, pulp.LpVariable] = {}
         missing_member: dict[int, pulp.LpVariable] = {}
-        for s in self.shifts:
+        for i, s in enumerate(self.shifts):
+            target_size = cfg.get_shift_size(i, total_shifts)
             missing_board[s.index] = pulp.LpVariable(
-                f"missing_board_{s.index}", lowBound=0, upBound=cfg.shift_size, cat="Integer"
+                f"missing_board_{s.index}", lowBound=0, upBound=target_size, cat="Integer"
             )
             missing_member[s.index] = pulp.LpVariable(
-                f"missing_member_{s.index}", lowBound=0, upBound=cfg.shift_size, cat="Integer"
+                f"missing_member_{s.index}", lowBound=0, upBound=target_size, cat="Integer"
             )
 
-        # 3. Hard Constraint: Exactly shift_size (4) people per shift
-        for s in self.shifts:
+        # 3. Hard Constraint: Exactly required shift size people per shift
+        for i, s in enumerate(self.shifts):
+            target_size = cfg.get_shift_size(i, total_shifts)
             prob += (
                 pulp.lpSum(x.get((p, s.index), 0) for p in candidate_people)
                 + missing_board[s.index]
                 + missing_member[s.index]
-                == cfg.shift_size,
+                == target_size,
                 f"ShiftSize_{s.index}",
             )
 
@@ -113,20 +188,18 @@ class ScheduleOptimizer:
 
         # 6. Soft Constraint: Consecutive staffing duration (> max_consecutive_hours)
         consec_penalty_vars: list[pulp.LpVariable] = []
-        # Find consecutive windows whose total duration exceeds max_consecutive_hours
-        for i in range(len(self.shifts)):
-            window = [self.shifts[i]]
-            current_duration = self.shifts[i].duration_hours
-            for j in range(i + 1, len(self.shifts)):
-                if not self.shifts[j].is_consecutive_to(self.shifts[j - 1]):
-                    break
-                window.append(self.shifts[j])
-                current_duration += self.shifts[j].duration_hours
-                if current_duration > cfg.max_consecutive_hours:
-                    # Minimal violating window found
-                    w_indices = [s_w.index for s_w in window]
-                    for p in candidate_people:
-                        # If person cannot even staff all shifts in window, skip
+        for p in candidate_people:
+            limit = cfg.get_max_consecutive_hours(p.is_board)
+            for i in range(len(self.shifts)):
+                window = [self.shifts[i]]
+                current_duration = self.shifts[i].duration_hours
+                for j in range(i + 1, len(self.shifts)):
+                    if not self.shifts[j].is_consecutive_to(self.shifts[j - 1]):
+                        break
+                    window.append(self.shifts[j])
+                    current_duration += self.shifts[j].duration_hours
+                    if current_duration > limit:
+                        w_indices = [s_w.index for s_w in window]
                         if any((p, s_idx) not in x for s_idx in w_indices):
                             continue
                         c_var = pulp.LpVariable(
@@ -138,7 +211,7 @@ class ScheduleOptimizer:
                             <= len(window) - 1 + c_var
                         )
                         consec_penalty_vars.append(c_var)
-                    break
+                        break
 
         # 7. Soft Preference: Contiguous hours (strictly avoid split shifts)
         split_penalty_vars: list[pulp.LpVariable] = []
@@ -176,13 +249,18 @@ class ScheduleOptimizer:
             total_p = pulp.lpSum(x.get((p, s.index), 0) for s in self.shifts)
             prob += max_workload_var >= total_p
 
-        # 10. Soft Preference: "maybe" availability penalty
+        # 10. Soft Preference: "maybe" availability penalty & necessity constraint
         maybe_assigned_vars: list[pulp.LpVariable] = [
             x[p, s.index]
             for p in candidate_people
             for s in self.shifts
             if (p, s.index) in x and p.availability.get(s.index) == Availability.MAYBE
         ]
+        if maybe_assigned_vars and min_maybe_needed > 0:
+            prob += (
+                pulp.lpSum(maybe_assigned_vars) <= min_maybe_needed,
+                "MaxMaybeAllowedByNecessity",
+            )
 
         # 11. Total Objective function
         objective = (

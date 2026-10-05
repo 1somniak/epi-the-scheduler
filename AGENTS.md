@@ -30,7 +30,7 @@ The possible values are:
 
 A `no` availability should be treated as a hard constraint: a person must not be assigned to a shift for which they are unavailable.
 
-A `maybe` availability is allowed, but should be penalized compared to `yes`.
+A `maybe` availability is strictly reserved for cases of necessity: people who are `maybe` staff only if there are not enough members available with `yes` (to fill the 4 spots or satisfy board presence). Otherwise, they must not staff.
 
 ---
 
@@ -131,12 +131,14 @@ It is preferable to report an ambiguity than to generate a schedule using an inc
 
 ## 4. Shift Composition
 
-Every shift must contain exactly 4 people.
+Standard shifts must contain exactly 4 people.
 
-Example:
+However, the first shift (installation / setup) and the last shift (désinstallation / teardown) require an extra person, for a total of 5 people.
+
+Example (standard shift):
 
 ```text
-Shift 1
+Shift 2
 - Alice
 - Bob
 - Charlie
@@ -206,9 +208,11 @@ Board presence is a higher-priority constraint than friendship preferences and o
 
 ## 6. Staffing Duration and Contiguity
 
-Ideally, a person should not staff for more than 2 consecutive hours.
+Ideally, a standard volunteer should not staff for more than 2 consecutive hours.
 
-The generator should therefore avoid assignments such as:
+However, board members may staff for up to 3 consecutive hours in order to ensure continuous board presence across the event and prevent split shifts.
+
+The generator should avoid assignments exceeding these thresholds:
 
 ```text
 Shift 1: Alice
@@ -216,7 +220,7 @@ Shift 2: Alice
 Shift 3: Alice
 ```
 
-when these shifts are consecutive and represent more than 2 hours of continuous staffing.
+when Alice is a standard volunteer, or more than 3 consecutive hours when Alice is a board member.
 
 ### Contiguous Hours
 
@@ -242,14 +246,17 @@ If no satisfactory solution exists, this preference may be violated in order to 
 
 The first and last shifts are special.
 
-They should preferably contain at least two board members.
+They correspond to setup (installation) and teardown (désinstallation) and require an additional person (5 people instead of 4).
+
+Additionally, they should preferably contain at least two board members.
 
 For example:
 
 ```text
-First shift:
+First shift (Installation):
 - Board member
 - Board member
+- Member
 - Member
 - Member
 ```
@@ -257,14 +264,15 @@ First shift:
 and:
 
 ```text
-Last shift:
+Last shift (Désinstallation):
 - Board member
 - Board member
+- Member
 - Member
 - Member
 ```
 
-This is a preference, not a hard constraint.
+This board presence preference is a preference, not a hard constraint.
 
 If this conflicts with a higher-priority constraint, it may be violated.
 
@@ -321,7 +329,7 @@ The generator should use a clear hierarchy between hard constraints and soft pre
 
 These constraints must be respected whenever possible:
 
-1. Every shift contains exactly 4 people.
+1. Every shift contains the required number of people (5 for first and last shifts for installation/désinstallation, 4 for standard shifts).
 2. A person with `no` availability must not be assigned to that shift.
 3. Every shift must contain at least one board member.
 4. If a shift cannot be filled with enough real people, use `missing member N` placeholders.
@@ -331,7 +339,7 @@ These constraints must be respected whenever possible:
 
 Once the hard constraints are satisfied, the generator should optimize the following preferences:
 
-1. Prefer `yes` availability over `maybe`.
+1. `maybe` availability is used strictly in case of necessity (insufficient `yes` members to staff the shift); otherwise people with `maybe` must not staff.
 2. Avoid having a person staff for more than 2 consecutive hours.
 3. Ensure hours are contiguous when working multiple shifts (strictly avoid split shifts).
 4. Prefer at least two board members in the first shift.

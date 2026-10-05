@@ -30,17 +30,16 @@ def validate_solution(solution: ScheduleSolution) -> ScheduleValidationReport:
     placeholder_summary: list[str] = []
     realized_friendships: list[tuple[str, str, str]] = []
 
-    shift_size = solution.config.shift_size
-    max_consec = solution.config.max_consecutive_hours
-
     # 1. Hard check: Shift composition & valid slots
-    for assigned_shift in solution.shifts:
+    total_shifts = len(solution.shifts)
+    for i, assigned_shift in enumerate(solution.shifts):
         s = assigned_shift.shift
         slots = assigned_shift.slots
+        expected_size = solution.config.get_shift_size(i, total_shifts)
 
-        if len(slots) != shift_size:
+        if len(slots) != expected_size:
             hard_errors.append(
-                f"Shift '{s.name}' has {len(slots)} entries (expected exactly {shift_size})."
+                f"Shift '{s.name}' has {len(slots)} entries (expected exactly {expected_size})."
             )
 
         # Check placeholder names format
@@ -96,6 +95,7 @@ def validate_solution(solution: ScheduleSolution) -> ScheduleValidationReport:
 
     # 3. Check consecutive hours for every real person
     for p in solution.people:
+        allowed_max = solution.config.get_max_consecutive_hours(p.is_board)
         current_chain: list[AssignedShift] = []
         for i, a_shift in enumerate(solution.shifts):
             p_in_shift = any(slot.person == p for slot in a_shift.slots)
@@ -108,14 +108,14 @@ def validate_solution(solution: ScheduleSolution) -> ScheduleValidationReport:
                         current_chain.append(a_shift)
                     else:
                         # Chain ended, evaluate it
-                        _evaluate_chain(current_chain, p, max_consec, consec_violations, soft_violations)
+                        _evaluate_chain(current_chain, p, allowed_max, consec_violations, soft_violations)
                         current_chain = [a_shift]
             else:
                 if current_chain:
-                    _evaluate_chain(current_chain, p, max_consec, consec_violations, soft_violations)
+                    _evaluate_chain(current_chain, p, allowed_max, consec_violations, soft_violations)
                     current_chain = []
         if current_chain:
-            _evaluate_chain(current_chain, p, max_consec, consec_violations, soft_violations)
+            _evaluate_chain(current_chain, p, allowed_max, consec_violations, soft_violations)
 
     # 4. Check contiguity (strictly avoid split shifts)
     split_violations: list[str] = []

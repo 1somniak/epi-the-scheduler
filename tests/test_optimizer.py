@@ -176,6 +176,134 @@ class TestScheduleOptimizer(unittest.TestCase):
         report = validate_solution(solution)
         self.assertEqual(len(report.split_shift_violations), 0, "No split shift violations expected!")
 
+    def test_maybe_not_assigned_when_sufficient_yes(self):
+        """When enough YES members are available, people with maybe must NOT staff."""
+        board = Person(canonical_id="admin", display_name="Admin", first_name="admin", is_board=True)
+        board.availability[0] = Availability.YES
+
+        p1 = Person(canonical_id="p1", display_name="Person1", first_name="p1", is_board=False)
+        p2 = Person(canonical_id="p2", display_name="Person2", first_name="p2", is_board=False)
+        p3 = Person(canonical_id="p3", display_name="Person3", first_name="p3", is_board=False)
+        for p in [p1, p2, p3]:
+            p.availability[0] = Availability.YES
+
+        # Maybe person available
+        pmaybe = Person(canonical_id="pm", display_name="MaybeGuy", first_name="pm", is_board=False)
+        pmaybe.availability[0] = Availability.MAYBE
+
+        optimizer = ScheduleOptimizer(shifts=[self.shift1], people=[board, p1, p2, p3, pmaybe], friendships=[])
+        solution = optimizer.solve()
+
+        assigned_names = [s.name for s in solution.shifts[0].slots]
+        self.assertNotIn("MaybeGuy", assigned_names, "Maybe person must not staff when enough YES members exist!")
+        self.assertIn("Admin", assigned_names)
+        self.assertIn("Person1", assigned_names)
+        self.assertIn("Person2", assigned_names)
+        self.assertIn("Person3", assigned_names)
+
+    def test_maybe_assigned_only_when_necessary(self):
+        """When there are not enough YES members (shortage), maybe person is assigned to avoid placeholder."""
+        board = Person(canonical_id="admin", display_name="Admin", first_name="admin", is_board=True)
+        board.availability[0] = Availability.YES
+
+        p1 = Person(canonical_id="p1", display_name="Person1", first_name="p1", is_board=False)
+        p2 = Person(canonical_id="p2", display_name="Person2", first_name="p2", is_board=False)
+        p1.availability[0] = Availability.YES
+        p2.availability[0] = Availability.YES
+
+        # Only 3 YES people, 1 MAYBE person -> Necessity!
+        pmaybe = Person(canonical_id="pm", display_name="MaybeGuy", first_name="pm", is_board=False)
+        pmaybe.availability[0] = Availability.MAYBE
+
+        optimizer = ScheduleOptimizer(shifts=[self.shift1], people=[board, p1, p2, pmaybe], friendships=[])
+        solution = optimizer.solve()
+
+        assigned_names = [s.name for s in solution.shifts[0].slots]
+        self.assertIn("MaybeGuy", assigned_names, "Maybe person must staff in case of necessity!")
+        self.assertNotIn("missing member 1", assigned_names)
+
+    def test_maybe_board_assigned_when_no_yes_board(self):
+        """When 4 volunteers are YES but NO board member is YES, a MAYBE board member must be used."""
+        v1 = Person(canonical_id="v1", display_name="Vol1", first_name="v1", is_board=False)
+        v2 = Person(canonical_id="v2", display_name="Vol2", first_name="v2", is_board=False)
+        v3 = Person(canonical_id="v3", display_name="Vol3", first_name="v3", is_board=False)
+        v4 = Person(canonical_id="v4", display_name="Vol4", first_name="v4", is_board=False)
+        for v in [v1, v2, v3, v4]:
+            v.availability[0] = Availability.YES
+
+        # Board member with MAYBE
+        b_maybe = Person(canonical_id="b_maybe", display_name="BoardMaybe", first_name="bm", is_board=True)
+        b_maybe.availability[0] = Availability.MAYBE
+
+        optimizer = ScheduleOptimizer(shifts=[self.shift1], people=[v1, v2, v3, v4, b_maybe], friendships=[])
+        solution = optimizer.solve()
+
+        assigned_names = [s.name for s in solution.shifts[0].slots]
+        self.assertIn("BoardMaybe", assigned_names, "Board maybe member must staff to satisfy board presence!")
+        self.assertNotIn("missing board member 1", assigned_names)
+
+    def test_first_and_last_shift_size_five(self):
+        """First shift (installation) and last shift (teardown) must contain 5 people, middle shifts 4."""
+        shifts = [self.shift1, self.shift2, self.shift3]
+        board = Person(canonical_id="admin", display_name="Admin", first_name="admin", is_board=True)
+        for s in shifts:
+            board.availability[s.index] = Availability.YES
+
+        # Total slots: 5 + 4 + 5 = 14 slots
+        # Create enough volunteers so everyone works without exceeding 2h
+        volunteers = [
+            Person(canonical_id=f"v_{i}", display_name=f"Vol{i}", first_name=f"v{i}", is_board=False)
+            for i in range(15)
+        ]
+        for v in volunteers:
+            for s in shifts:
+                v.availability[s.index] = Availability.YES
+
+        cfg = SchedulerConfig(shift_size=4, first_last_shift_size=5)
+        optimizer = ScheduleOptimizer(shifts=shifts, people=[board] + volunteers, friendships=[], config=cfg)
+        solution = optimizer.solve()
+
+        self.assertEqual(len(solution.shifts), 3)
+        self.assertEqual(len(solution.shifts[0].slots), 5, "First shift (installation) must have 5 people")
+        self.assertEqual(len(solution.shifts[1].slots), 4, "Middle shift must have 4 people")
+        self.assertEqual(len(solution.shifts[2].slots), 5, "Last shift (teardown) must have 5 people")
+
+        val_report = validate_solution(solution)
+        self.assertTrue(val_report.is_valid, f"Validation errors: {val_report.hard_constraint_errors}")
+
+    def test_board_members_max_consecutive_three_hours(self):
+        """Board members can staff for 3 consecutive hours without warnings when max_consecutive_hours_board=3.0."""
+        shifts = [self.shift1, self.shift2, self.shift3]
+        board = Person(canonical_id="admin", display_name="Admin", first_name="admin", is_board=True)
+        for s in shifts:
+            board.availability[s.index] = Availability.YES
+
+        # Provide enough volunteers so board could work 3 shifts if needed
+        volunteers = [
+            Person(canonical_id=f"v_{i}", display_name=f"Vol{i}", first_name=f"v{i}", is_board=False)
+            for i in range(12)
+        ]
+        for v in volunteers:
+            for s in shifts:
+                v.availability[s.index] = Availability.YES
+
+        cfg = SchedulerConfig(
+            shift_size=4,
+            first_last_shift_size=4,
+            max_consecutive_hours=2.0,
+            max_consecutive_hours_board=3.0,
+            weight_split_shift=1000.0,
+        )
+        optimizer = ScheduleOptimizer(shifts=shifts, people=[board] + volunteers, friendships=[], config=cfg)
+        solution = optimizer.solve()
+
+        val_report = validate_solution(solution)
+        # Check that no board member received a consecutive violation for 3h
+        board_consec_violations = [v for v in val_report.consecutive_violations if "Admin" in v]
+        self.assertEqual(len(board_consec_violations), 0, "Board member should not receive violation for 3h")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

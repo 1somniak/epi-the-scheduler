@@ -61,30 +61,42 @@ def parse_args() -> argparse.Namespace:
         "--shift-size",
         type=int,
         default=4,
-        help="Number of people per shift",
+        help="Number of people per standard shift",
+    )
+    parser.add_argument(
+        "--first-last-shift-size",
+        type=int,
+        default=5,
+        help="Number of people for setup and teardown shifts (first and last)",
     )
     parser.add_argument(
         "--max-consec-hours",
         type=float,
         default=2.0,
-        help="Maximum continuous hours of staffing preferred per person",
+        help="Maximum continuous hours of staffing preferred per volunteer",
+    )
+    parser.add_argument(
+        "--max-consec-hours-board",
+        type=float,
+        default=3.0,
+        help="Maximum continuous hours of staffing preferred for board members",
     )
     parser.add_argument(
         "--w-maybe",
         type=float,
-        default=100.0,
+        default=10000.0,
         help="Penalty weight for using 'maybe' availability",
     )
     parser.add_argument(
         "--w-consecutive",
         type=float,
-        default=500.0,
+        default=300.0,
         help="Penalty weight for exceeding maximum consecutive hours",
     )
     parser.add_argument(
         "--w-split",
         type=float,
-        default=300.0,
+        default=1000.0,
         help="Penalty weight for non-contiguous staffing (split shifts)",
     )
     parser.add_argument(
@@ -152,7 +164,9 @@ def main() -> int:
     # 4. Build configuration
     config = SchedulerConfig(
         shift_size=args.shift_size,
+        first_last_shift_size=args.first_last_shift_size,
         max_consecutive_hours=args.max_consec_hours,
+        max_consecutive_hours_board=args.max_consec_hours_board,
         weight_maybe=args.w_maybe,
         weight_consecutive=args.w_consecutive,
         weight_split_shift=args.w_split,

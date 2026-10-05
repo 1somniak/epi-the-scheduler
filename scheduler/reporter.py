@@ -81,11 +81,13 @@ class ScheduleReporter:
             header_style="bold white on blue",
             show_lines=True,
         )
-        table.add_column("Shift / Time", style="bold white", width=28)
-        table.add_column("Member 1", width=22)
-        table.add_column("Member 2", width=22)
-        table.add_column("Member 3", width=22)
-        table.add_column("Member 4", width=22)
+        max_slots = max(
+            (len(s.slots) for s in solution.shifts),
+            default=solution.config.first_last_shift_size,
+        )
+        table.add_column("Shift / Time", style="bold white", width=26)
+        for i in range(max_slots):
+            table.add_column(f"Member {i + 1}", width=20)
 
         for assigned_shift in solution.shifts:
             shift_title = assigned_shift.shift.name
@@ -106,20 +108,10 @@ class ScheduleReporter:
                     color = "yellow" if slot.availability_used == "maybe" else "green"
                     slot_cells.append(f"[{color}]👤 {slot.name}{tag}[/{color}]")
 
-            # Pad if fewer than 4 (should be 4)
-            while len(slot_cells) < 4:
+            while len(slot_cells) < max_slots:
                 slot_cells.append("[dim]-[/dim]")
 
-            board_count = len(assigned_shift.board_members)
-            board_str = f"[bold green]{board_count}[/bold green]" if board_count >= 1 else "[bold red]0[/bold red]"
-
-            table.add_row(
-                shift_title,
-                slot_cells[0],
-                slot_cells[1],
-                slot_cells[2],
-                slot_cells[3],
-            )
+            table.add_row(shift_title, *slot_cells[:max_slots])
 
         self.console.print(table)
         self.console.print()
@@ -205,21 +197,23 @@ class ScheduleReporter:
 
 def export_schedule_csv(solution: ScheduleSolution, filepath: str) -> None:
     """Exports the generated schedule to a clean CSV format."""
+    max_slots = max(
+        (len(s.slots) for s in solution.shifts),
+        default=solution.config.first_last_shift_size,
+    )
+    headers = ["Shift"] + [f"Slot {i + 1}" for i in range(max_slots)] + ["Board Members", "Placeholders"]
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Shift", "Slot 1", "Slot 2", "Slot 3", "Slot 4", "Board Members", "Placeholders"])
+        writer.writerow(headers)
         for a_shift in solution.shifts:
             slot_names = [s.name for s in a_shift.slots]
-            while len(slot_names) < 4:
+            while len(slot_names) < max_slots:
                 slot_names.append("")
             board_names = [s.name for s in a_shift.slots if s.is_board and not s.is_placeholder]
             placeholders = [s.name for s in a_shift.slots if s.is_placeholder]
             writer.writerow([
                 a_shift.shift.name,
-                slot_names[0],
-                slot_names[1],
-                slot_names[2],
-                slot_names[3],
+                *slot_names[:max_slots],
                 "; ".join(board_names),
                 "; ".join(placeholders),
             ])

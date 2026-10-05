@@ -95,22 +95,38 @@ class Friendship:
 class SchedulerConfig:
     """Configurable weights and thresholds for the optimization engine."""
     shift_size: int = 4
+    first_last_shift_size: int = 5
     max_consecutive_hours: float = 2.0
+    max_consecutive_hours_board: float = 3.0
+
+    def get_shift_size(self, shift_idx: int, total_shifts: int) -> int:
+        """Returns the required staffing count for a shift given its index.
+
+        When there are multiple shifts, the first (setup) and last (teardown)
+        shifts require an additional person.
+        """
+        if total_shifts > 1 and (shift_idx == 0 or shift_idx == total_shifts - 1):
+            return self.first_last_shift_size
+        return self.shift_size
+
+    def get_max_consecutive_hours(self, is_board: bool) -> float:
+        """Returns the maximum preferred continuous hours for a person."""
+        return self.max_consecutive_hours_board if is_board else self.max_consecutive_hours
 
     # Penalties for hard constraint relaxations (placeholders)
     weight_missing_board: float = 1_000_000.0
     weight_missing_member: float = 500_000.0
 
     # Penalties for soft constraint preferences
-    weight_consecutive: float = 500.0
-    weight_maybe: float = 100.0
+    weight_consecutive: float = 300.0
+    weight_maybe: float = 10_000.0
     weight_first_last_board: float = 50.0
     weight_friendship: float = 30.0
     weight_balance_dev: float = 10.0
     weight_balance_max: float = 20.0
-    weight_split_shift: float = 300.0
+    weight_split_shift: float = 1_000.0
 
-    solver_timeout_sec: int | None = 60
+    solver_timeout_sec: int | None = 20
     solver_gap_rel: float = 0.01
 
 
