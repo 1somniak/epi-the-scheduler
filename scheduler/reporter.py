@@ -116,6 +116,9 @@ class ScheduleReporter:
         self.console.print(table)
         self.console.print()
 
+        # Inverted Schedule Table (Person x Shift Presence Matrix)
+        self._print_matrix_rich(solution)
+
         # Solution Quality & Validation Report
         status_color = "green" if val_report.is_valid else "red"
         status_text = "PASSED (All hard constraints satisfied)" if val_report.is_valid else "FAILED (Hard constraints violated)"
@@ -163,6 +166,88 @@ class ScheduleReporter:
         self.console.print(w_table)
         self.console.print()
 
+    def _print_matrix_rich(self, solution: ScheduleSolution) -> None:
+        """Renders an inverted schedule table (one row per person, one column per shift) with checkboxes."""
+        assert self.console is not None
+
+        dates = {s.shift.date_str for s in solution.shifts if s.shift.date_str}
+        all_same_date = len(dates) <= 1
+        date_subtitle = f"Date : {next(iter(dates))}" if len(dates) == 1 else None
+
+        table = Table(
+            title="Planning individuel des présences",
+            caption=date_subtitle,
+            box=ROUNDED,
+            header_style="bold white on blue",
+            show_lines=False,
+        )
+        table.add_column("Personne", style="bold white", min_width=22)
+
+        for assigned_shift in solution.shifts:
+            sh = assigned_shift.shift
+            if sh.start_time_str and sh.end_time_str:
+                if not all_same_date and sh.date_str:
+                    short_date = sh.date_str[5:] if len(sh.date_str) == 10 else sh.date_str
+                    header_str = f"{short_date}\n{sh.start_time_str}\n{sh.end_time_str}"
+                else:
+                    header_str = f"{sh.start_time_str}\n{sh.end_time_str}"
+            else:
+                header_str = sh.name
+            table.add_column(header_str, justify="center", no_wrap=True)
+
+        table.add_column("Total", justify="center", no_wrap=True)
+
+        sorted_people = sorted(
+            solution.people,
+            key=lambda p: (not p.is_board, p.display_name.lower()),
+        )
+
+        has_maybe = False
+        for p in sorted_people:
+            role_icon = "⭐" if p.is_board else "👤"
+            row_cells = [f"{role_icon} {p.display_name}"]
+            total_hours = 0.0
+
+            for assigned_shift in solution.shifts:
+                slot = next((s for s in assigned_shift.slots if s.person == p), None)
+                if slot:
+                    total_hours += assigned_shift.shift.duration_hours
+                    if slot.availability_used == "maybe":
+                        has_maybe = True
+                        row_cells.append("[bold yellow]☑*[/bold yellow]")
+                    else:
+                        row_cells.append("[bold green]☑[/bold green]")
+                else:
+                    row_cells.append("[dim]☐[/dim]")
+
+            row_cells.append(f"{total_hours:.1f}h")
+            table.add_row(*row_cells)
+
+        # Footer row with presence count
+        footer_cells = ["[bold cyan]Total présents[/bold cyan]"]
+        for assigned_shift in solution.shifts:
+            real_count = len([s for s in assigned_shift.slots if not s.is_placeholder])
+            ph_count = len([s for s in assigned_shift.slots if s.is_placeholder])
+            if ph_count > 0:
+                footer_cells.append(f"[bold cyan]{real_count}[/bold cyan] [bold red](+{ph_count}⚠️)[/bold red]")
+            else:
+                footer_cells.append(f"[bold cyan]{real_count}[/bold cyan]")
+
+        total_hours_sum = sum(
+            s.shift.duration_hours * len([sl for sl in s.slots if not sl.is_placeholder])
+            for s in solution.shifts
+        )
+        footer_cells.append(f"[bold cyan]{total_hours_sum:.0f}h[/bold cyan]")
+        table.add_section()
+        table.add_row(*footer_cells)
+
+        self.console.print(table)
+        legend_parts = ["[bold green]☑[/bold green] Présent", "[dim]☐[/dim] Absent", "⭐ Bureau", "👤 Bénévole"]
+        if has_maybe:
+            legend_parts.insert(1, "[bold yellow]☑*[/bold yellow] Présent (maybe)")
+        self.console.print(f"  [dim]Légende :[/dim]  {'   '.join(legend_parts)}")
+        self.console.print()
+
     def _print_schedule_plain(
         self, solution: ScheduleSolution, val_report: ScheduleValidationReport
     ) -> None:
@@ -180,6 +265,9 @@ class ScheduleReporter:
                     m_tag = " [MAYBE]" if slot.availability_used == "maybe" else ""
                     print(f"  * {slot.name}{tag}{m_tag}")
 
+        # Inverted matrix table
+        self._print_matrix_plain(solution)
+
         print("\n" + "=" * 70)
         print(f"Validation Status: {'PASSED' if val_report.is_valid else 'FAILED'}")
         if val_report.soft_constraint_violations:
@@ -193,6 +281,58 @@ class ScheduleReporter:
         for p_name, count in sorted(val_report.workload_summary.items(), key=lambda item: -item[1]):
             print(f"  {p_name:25}: {count} shift(s)")
         print("=" * 70)
+
+    def _print_matrix_plain(self, solution: ScheduleSolution) -> None:
+        """Renders plain text inverted schedule matrix (one row per person, one column per shift)."""
+        print("\n--- Planning individuel des présences ---")
+        shift_headers = []
+        for s in solution.shifts:
+            sh = s.shift
+            if sh.start_time_str and sh.end_time_str:
+                shift_headers.append(f"{sh.start_time_str}-{sh.end_time_str}")
+            else:
+                shift_headers.append(sh.name[:11])
+
+        col_w = max(7, max((len(h) for h in shift_headers), default=7))
+        name_w = max(26, max((len(p.display_name) + 11 for p in solution.people), default=26))
+
+        header_line = f"{'Personne':<{name_w}}" + "".join(f"{h:^{col_w}} " for h in shift_headers) + " Total"
+        print(header_line)
+        print("-" * len(header_line))
+
+        sorted_people = sorted(
+            solution.people,
+            key=lambda p: (not p.is_board, p.display_name.lower()),
+        )
+
+        for p in sorted_people:
+            role = "[Bureau]  " if p.is_board else "[Bénévole]"
+            p_label = f"{role} {p.display_name}"
+            row = f"{p_label:<{name_w}}"
+            tot = 0.0
+            for s in solution.shifts:
+                slot = next((sl for sl in s.slots if sl.person == p), None)
+                if slot:
+                    tot += s.shift.duration_hours
+                    mark = "[M]" if slot.availability_used == "maybe" else "[X]"
+                else:
+                    mark = "[ ]"
+                row += f"{mark:^{col_w}} "
+            row += f" {tot:.1f}h"
+            print(row)
+
+        print("-" * len(header_line))
+        tot_line = f"{'Total présents':<{name_w}}"
+        for s in solution.shifts:
+            cnt = len([sl for sl in s.slots if not sl.is_placeholder])
+            tot_line += f"{cnt:^{col_w}} "
+        tot_hours_all = sum(
+            s.shift.duration_hours * len([sl for sl in s.slots if not sl.is_placeholder])
+            for s in solution.shifts
+        )
+        tot_line += f" {tot_hours_all:.1f}h"
+        print(tot_line)
+        print("Légende : [X] Présent  [ ] Absent  [M] Présent via 'maybe'")
 
 
 def export_schedule_csv(solution: ScheduleSolution, filepath: str) -> None:
@@ -219,6 +359,35 @@ def export_schedule_csv(solution: ScheduleSolution, filepath: str) -> None:
             ])
 
 
+def export_matrix_csv(solution: ScheduleSolution, filepath: str) -> None:
+    """Exports the inverted schedule (person x shift matrix) to a CSV file."""
+    shift_cols = [s.shift.name for s in solution.shifts]
+    headers = ["Person", "Role"] + shift_cols + ["Total Shifts", "Total Hours"]
+    sorted_people = sorted(
+        solution.people,
+        key=lambda p: (not p.is_board, p.display_name.lower())
+    )
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        for p in sorted_people:
+            role = "Board" if p.is_board else "Volunteer"
+            row = [p.display_name, role]
+            shifts_worked = 0
+            hours_worked = 0.0
+            for s in solution.shifts:
+                slot = next((sl for sl in s.slots if sl.person == p), None)
+                if slot:
+                    shifts_worked += 1
+                    hours_worked += s.shift.duration_hours
+                    mark = "X (maybe)" if slot.availability_used == "maybe" else "X"
+                else:
+                    mark = ""
+                row.append(mark)
+            row.extend([str(shifts_worked), f"{hours_worked:.1f}"])
+            writer.writerow(row)
+
+
 def export_report_txt(solution: ScheduleSolution, report: ScheduleValidationReport, filepath: str) -> None:
     """Exports full schedule and validation report to a plain text file."""
     with open(filepath, "w", encoding="utf-8") as f:
@@ -234,6 +403,58 @@ def export_report_txt(solution: ScheduleSolution, report: ScheduleValidationRepo
                 maybe = " [MAYBE AVAILABILITY]" if slot.availability_used == "maybe" else ""
                 f.write(f"  - {slot.name} [{role}]{ph}{maybe}\n")
             f.write("\n")
+
+        f.write("\n" + "=" * 70 + "\n")
+        f.write("PLANNING INDIVIDUEL DES PRÉSENCES (PERSONNES × SHIFTS)\n")
+        f.write("=" * 70 + "\n")
+        shift_headers = []
+        for s in solution.shifts:
+            sh = s.shift
+            if sh.start_time_str and sh.end_time_str:
+                shift_headers.append(f"{sh.start_time_str}-{sh.end_time_str}")
+            else:
+                shift_headers.append(sh.name[:11])
+
+        col_w = max(7, max((len(h) for h in shift_headers), default=7))
+        name_w = max(26, max((len(p.display_name) + 11 for p in solution.people), default=26))
+
+        header_line = f"{'Personne':<{name_w}}" + "".join(f"{h:^{col_w}} " for h in shift_headers) + " Total\n"
+        f.write(header_line)
+        f.write("-" * len(header_line.strip()) + "\n")
+
+        sorted_people = sorted(
+            solution.people,
+            key=lambda p: (not p.is_board, p.display_name.lower()),
+        )
+
+        for p in sorted_people:
+            role = "[Bureau]  " if p.is_board else "[Bénévole]"
+            p_label = f"{role} {p.display_name}"
+            row = f"{p_label:<{name_w}}"
+            tot = 0.0
+            for s in solution.shifts:
+                slot = next((sl for sl in s.slots if sl.person == p), None)
+                if slot:
+                    tot += s.shift.duration_hours
+                    mark = "[M]" if slot.availability_used == "maybe" else "[X]"
+                else:
+                    mark = "[ ]"
+                row += f"{mark:^{col_w}} "
+            row += f" {tot:.1f}h\n"
+            f.write(row)
+
+        f.write("-" * len(header_line.strip()) + "\n")
+        tot_line = f"{'Total présents':<{name_w}}"
+        for s in solution.shifts:
+            cnt = len([sl for sl in s.slots if not sl.is_placeholder])
+            tot_line += f"{cnt:^{col_w}} "
+        tot_hours_all = sum(
+            s.shift.duration_hours * len([sl for sl in s.slots if not sl.is_placeholder])
+            for s in solution.shifts
+        )
+        tot_line += f" {tot_hours_all:.1f}h\n"
+        f.write(tot_line)
+        f.write("Légende : [X] Présent  [ ] Absent  [M] Présent via 'maybe'\n\n")
 
         f.write("=" * 70 + "\n")
         f.write("VALIDATION REPORT\n")

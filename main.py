@@ -9,7 +9,12 @@ from scheduler.loader import DataLoader
 from scheduler.models import SchedulerConfig
 from scheduler.normalizer import IdentityResolver
 from scheduler.optimizer import ScheduleOptimizer
-from scheduler.reporter import ScheduleReporter, export_report_txt, export_schedule_csv
+from scheduler.reporter import (
+    ScheduleReporter,
+    export_matrix_csv,
+    export_report_txt,
+    export_schedule_csv,
+)
 from scheduler.validator import validate_solution
 
 
@@ -40,6 +45,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-o", "--output",
         help="Path to output CSV file for the generated schedule",
+    )
+    parser.add_argument(
+        "--output-matrix",
+        help="Path to output inverted schedule CSV (person x shift presence matrix)",
     )
     parser.add_argument(
         "--export-txt",
@@ -196,6 +205,10 @@ def main() -> int:
     if args.output:
         export_schedule_csv(solution, args.output)
         print(f"Schedule exported to CSV: '{args.output}'")
+
+    if args.output_matrix:
+        export_matrix_csv(solution, args.output_matrix)
+        print(f"Inverted schedule matrix exported to CSV: '{args.output_matrix}'")
 
     if args.export_txt:
         export_report_txt(solution, val_report, args.export_txt)
